@@ -16,7 +16,7 @@ import org.yaler.Dispatcher;
 import org.yaler.Relay;
 
 class Yaler {
-	private static final String VERSION = "1.0";
+	private static final String VERSION = "1.01";
 
 	public static void main (String[] args) throws Exception {
 		boolean error = false, secure = false;

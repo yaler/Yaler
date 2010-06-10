@@ -24,30 +24,26 @@ import org.yaler.StateMachines.StateMachine;
 public final class Connections {
 	private Connections () {}
 
-	public static enum Error {
-		NONE,
-		CLOSED,
-		INBOUND_CLOSED,
-		OPERATION_PENDING
-	}
-
 	public static interface CompletionHandler {
-		public void handle (Connection c, ByteBuffer b, Error e);
+		public void handle (Connection c, ByteBuffer b, boolean error);
 	}
 
-	private static final class SendMessage {
+	private static final class Send {
 		ByteBuffer buffer;
 		CompletionHandler completionHandler;
 	}
 
-	private static final class ReceiveMessage {
+	private static final class Receive {
 		ByteBuffer buffer;
 		CompletionHandler completionHandler;
 	}
 
 	public static final class Connection {
+		private static final boolean
+			ERROR = true;
 		private static final Object
-			CLOSE_MESSAGE = new Object(),
+			CLOSE = new Object(),
+			SHUTDOWN_OUTPUT = new Object(),
 			TASK_COMPLETION = new Object();
 		private static final ByteBuffer
 			NULL = ByteBuffer.allocate(0);
@@ -76,28 +72,28 @@ public final class Connections {
 				writeBuffer = ByteBuffer.allocateDirect(n);
 				writeBuffer.flip();
 			}
-			stateMachine.start(open);
+			stateMachine.start(normal);
 		}
 
-		private void bounceSendMessage (SendMessage m, Error e) {
-			m.completionHandler.handle(this, m.buffer, e);
+		private void bounceSend (Send s) {
+			s.completionHandler.handle(this, s.buffer, ERROR);
 		}
 
-		private void bounceReceiveMessage (ReceiveMessage m, Error e) {
-			m.completionHandler.handle(this, m.buffer, e);
+		private void bounceReceive (Receive r) {
+			r.completionHandler.handle(this, r.buffer, ERROR);
 		}
 
-		private void signalSendCompletion (Error e) {
+		private void signalSendCompletion (boolean error) {
 			if (sendCompletionHandler != null) {
-				sendCompletionHandler.handle(this, outboundBuffer, e);
+				sendCompletionHandler.handle(this, outboundBuffer, error);
 				outboundBuffer = NULL;
 				sendCompletionHandler = null;
 			}
 		}
 
-		private void signalReceiveCompletion (Error e) {
+		private void signalReceiveCompletion (boolean error) {
 			if (receiveCompletionHandler != null) {
-				receiveCompletionHandler.handle(this, inboundBuffer, e);
+				receiveCompletionHandler.handle(this, inboundBuffer, error);
 				inboundBuffer = NULL;
 				receiveCompletionHandler = null;
 			}
@@ -179,17 +175,52 @@ public final class Connections {
 			}
 		}
 
-		private void enterClosure () {
-			try {
-				sslEngine.closeInbound();
-			} catch (SSLException e) {}
-			sslEngine.closeOutbound();
-		}
-
 		private final State open = new State() {
+			public void handle (StateMachine m, Object o) {
+				if (o == EXIT) {
+					try {
+						channel.close();
+					} catch (IOException e) {}
+				} else {
+					m.upwardTo(TOP);
+				}
+			}
+		};
+
+		private final State normal = new State() {
+			State next;
+
+			void transitionToClosed () {
+				if (next == null) {
+					signalSendCompletion(ERROR);
+					signalReceiveCompletion(ERROR);
+					next = closed;
+					stateMachine.transitionTo(next);
+				}
+			}
+
+			void transitionToClosure () {
+				if (next == null) {
+					signalSendCompletion(outboundBuffer.hasRemaining());
+					signalReceiveCompletion(ERROR);
+					sslEngine.closeOutbound();
+					Status s = wrap();
+					if (s == null) {
+						next = closed;
+					} else {
+						register(SelectionKey.OP_WRITE);
+						next = closure;
+					}
+					stateMachine.transitionTo(next);
+				}
+			}
+
 			void handleSSLStatus () {
-				int p = inboundBuffer.position();
 				Status s;
+				int p = inboundBuffer.position();
+				if (!outboundBuffer.hasRemaining() && !writeBuffer.hasRemaining()) {
+					signalSendCompletion(!ERROR);
+				}
 				do {
 					s = null;
 					HandshakeStatus hs = sslEngine.getHandshakeStatus();
@@ -203,7 +234,9 @@ public final class Connections {
 						{
 							s = unwrap();
 							if (s == null) {
-								stateMachine.transitionTo(closed);
+								transitionToClosed();
+							} else if (s == Status.CLOSED) {
+								transitionToClosure();
 							} else if (s == Status.BUFFER_UNDERFLOW) {
 								register(SelectionKey.OP_READ);
 							}
@@ -215,7 +248,7 @@ public final class Connections {
 						{
 							s = wrap();
 							if (s == null) {
-								stateMachine.transitionTo(closed);
+								transitionToClosed();
 							} else {
 								register(SelectionKey.OP_WRITE);
 							}
@@ -223,21 +256,14 @@ public final class Connections {
 					}
 				} while (s == Status.OK);
 				if (inboundBuffer.position() != p) {
-					signalReceiveCompletion(Error.NONE);
-				} else if (sslEngine.isInboundDone()) {
-					signalReceiveCompletion(Error.INBOUND_CLOSED);
-				}
-				if (!outboundBuffer.hasRemaining()) {
-					signalSendCompletion(Error.NONE);
-				}
-				if (sslEngine.isOutboundDone()) {
-					stateMachine.transitionTo(closed);
+					signalReceiveCompletion(!ERROR);
 				}
 			}
 
-			void handleSendMessage (SendMessage m) {
-				sendCompletionHandler = m.completionHandler;
-				outboundBuffer = m.buffer;
+			void send (ByteBuffer b, CompletionHandler h) {
+				assert sendCompletionHandler == null;
+				sendCompletionHandler = h;
+				outboundBuffer = b;
 				if (sslEngine == null) {
 					writeBuffer = outboundBuffer;
 					register(SelectionKey.OP_WRITE);
@@ -246,9 +272,9 @@ public final class Connections {
 				}
 			}
 
-			void handleReceiveMessage (ReceiveMessage m) {
-				receiveCompletionHandler = m.completionHandler;
-				ByteBuffer b = m.buffer;
+			void receive (ByteBuffer b, CompletionHandler h) {
+				assert receiveCompletionHandler == null;
+				receiveCompletionHandler = h;
 				if (inboundBuffer == NULL) {
 					if (b != null) {
 						inboundBuffer = b;
@@ -284,89 +310,139 @@ public final class Connections {
 							inboundBuffer = x.put(b).put(inboundBuffer);
 						}
 					}
-					signalReceiveCompletion(Error.NONE);
+					signalReceiveCompletion(!ERROR);
 				}
 			}
 
-			private void handleSelection (int readyOps) {
+			void read () {
 				try {
-					if ((readyOps & SelectionKey.OP_READ) != 0) {
-						int n = channel.read(readBuffer);
-						if (n > 0) {
-							cancel(SelectionKey.OP_READ);
-							if (sslEngine == null) {
-								signalReceiveCompletion(Error.NONE);
-							} else {
-								handleSSLStatus();
-							}
-						} else if (n == -1) {
-							cancel(SelectionKey.OP_READ);
-							if (sslEngine == null) {
-								signalReceiveCompletion(Error.INBOUND_CLOSED);
-							} else {
-								enterClosure();
-								handleSSLStatus();
-							}
+					int n = channel.read(readBuffer);
+					if (n > 0) {
+						cancel(SelectionKey.OP_READ);
+						if (sslEngine == null) {
+							signalReceiveCompletion(!ERROR);
+						} else {
+							handleSSLStatus();
 						}
-					}
-					if ((readyOps & SelectionKey.OP_WRITE) != 0) {
-						channel.write(writeBuffer);
-						if (!writeBuffer.hasRemaining()) {
-							cancel(SelectionKey.OP_WRITE);
-							if (sslEngine == null) {
-								signalSendCompletion(Error.NONE);
-							} else {
-								handleSSLStatus();
-							}
+					} else if (n == -1) {
+						if (sslEngine == null) {
+							cancel(SelectionKey.OP_READ);
+							signalReceiveCompletion(ERROR);
+						} else {
+							transitionToClosed();
 						}
 					}
 				} catch (IOException e) {
-					stateMachine.transitionTo(closed);
+					if (sslEngine == null) {
+						cancel(SelectionKey.OP_READ);
+						signalReceiveCompletion(ERROR);
+					} else {
+						transitionToClosed();
+					}
+				}
+			}
+
+			void write () {
+				try {
+					channel.write(writeBuffer);
+					if (!writeBuffer.hasRemaining()) {
+						cancel(SelectionKey.OP_WRITE);
+						if (sslEngine == null) {
+							signalSendCompletion(!ERROR);
+						} else {
+							handleSSLStatus();
+						}
+					}
+				} catch (IOException e) {
+					if (sslEngine == null) {
+						cancel(SelectionKey.OP_WRITE);
+						signalSendCompletion(ERROR);
+					} else {
+						transitionToClosed();
+					}
+				}
+			}
+
+			void shutdownOutput () {
+				if (sslEngine == null) {
+					signalSendCompletion(ERROR);
+					try {
+						channel.socket().shutdownOutput();
+					} catch (IOException e) {}
+				} else {
+					transitionToClosure();
+				}
+			}
+
+			void close () {
+				if (sslEngine == null) {
+					transitionToClosed();
+				} else {
+					transitionToClosure();
 				}
 			}
 
 			public void handle (StateMachine m, Object o) {
-				if (o instanceof SendMessage) {
-					if (sendCompletionHandler != null) {
-						bounceSendMessage((SendMessage) o, Error.OPERATION_PENDING);
-					} else {
-						handleSendMessage((SendMessage) o);
-					}
-				} else if (o instanceof ReceiveMessage) {
-					if (receiveCompletionHandler != null) {
-						bounceReceiveMessage((ReceiveMessage) o, Error.OPERATION_PENDING);
-					} else {
-						handleReceiveMessage((ReceiveMessage) o);
-					}
-				} else if (o == CLOSE_MESSAGE) {
-					if (sslEngine == null) {
-						m.transitionTo(closed);
-					} else {
-						enterClosure();
-						handleSSLStatus();
-					}
+				if (o instanceof Send) {
+					Send s = (Send) o;
+					send(s.buffer, s.completionHandler);
+				} else if (o instanceof Receive) {
+					Receive r = (Receive) o;
+					receive(r.buffer, r.completionHandler);
 				} else if (o instanceof Selection) {
-					handleSelection(((Selection) o).readyOps);
+					int readyOps = ((Selection) o).readyOps;
+					if ((readyOps & SelectionKey.OP_READ) != 0) {
+						read();
+					}
+					if ((readyOps & SelectionKey.OP_WRITE) != 0) {
+						write();
+					}
 				} else if (o == TASK_COMPLETION) {
 					handleSSLStatus();
-				} else if (o == EXIT) {
-					try {
-						channel.close();
-					} catch (IOException e) {}
-					signalSendCompletion(Error.CLOSED);
-					signalReceiveCompletion(Error.CLOSED);
+				} else if (o == SHUTDOWN_OUTPUT) {
+					shutdownOutput();
+				} else if (o == CLOSE) {
+					close();
 				} else {
-					m.upwardTo(TOP);
+					m.upwardTo(open);
+				}
+			}
+		};
+
+		private final State closure = new State() {
+			public void handle (StateMachine m, Object o) {
+				if (o instanceof Send) {
+					bounceSend((Send) o);
+				} else if (o instanceof Receive) {
+					bounceReceive((Receive) o);
+				} else if (o instanceof Selection) {
+					if ((((Selection) o).readyOps & SelectionKey.OP_WRITE) != 0) {
+						try {
+							channel.write(writeBuffer);
+							if (!writeBuffer.hasRemaining()) {
+								Status s = wrap();
+								if ((s == null) || (s == Status.CLOSED)) {
+									m.transitionTo(closed);
+								}
+							}
+						} catch (IOException e) {
+							m.transitionTo(closed);
+						}
+					}
+				} else if
+					((o != TASK_COMPLETION) && (o != SHUTDOWN_OUTPUT) && (o != CLOSE))
+				{
+					m.upwardTo(open);
 				}
 			}
 		};
 
 		private final State closed = new State() {
 			public void handle (StateMachine m, Object o) {
-				if (o instanceof SendMessage) {
-					bounceSendMessage((SendMessage) o, Error.CLOSED);
-				} else if (o instanceof ReceiveMessage) {
-					bounceReceiveMessage((ReceiveMessage) o, Error.CLOSED);
+				if (o instanceof Send) {
+					bounceSend((Send) o);
+				} else if (o instanceof Receive) {
+					bounceReceive((Receive) o);
 				}
 			}
 		};
@@ -378,22 +454,26 @@ public final class Connections {
 		public void send (ByteBuffer b, CompletionHandler h) {
 			assert b != null;
 			assert h != null;
-			SendMessage m = new SendMessage();
-			m.buffer = b;
-			m.completionHandler = h;
-			Dispatcher.dispatch(stateMachine, m);
+			Send s = new Send();
+			s.buffer = b;
+			s.completionHandler = h;
+			Dispatcher.dispatch(stateMachine, s);
 		}
 
 		public void receive (ByteBuffer b, CompletionHandler h) {
 			assert h != null;
-			ReceiveMessage m = new ReceiveMessage();
-			m.buffer = b;
-			m.completionHandler = h;
-			Dispatcher.dispatch(stateMachine, m);
+			Receive r = new Receive();
+			r.buffer = b;
+			r.completionHandler = h;
+			Dispatcher.dispatch(stateMachine, r);
+		}
+
+		public void shutdownOutput () {
+			Dispatcher.dispatch(stateMachine, SHUTDOWN_OUTPUT);
 		}
 
 		public void close () {
-			Dispatcher.dispatch(stateMachine, CLOSE_MESSAGE);
+			Dispatcher.dispatch(stateMachine, CLOSE);
 		}
 	}
 }

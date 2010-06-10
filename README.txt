@@ -1,4 +1,4 @@
-Yaler 1.0
+Yaler - access small devices from the Web
 
 Copyright (c) 2010, Oberon microsystems AG, Switzerland. All rights reserved.
 
