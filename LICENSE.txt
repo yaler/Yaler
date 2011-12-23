@@ -2,19 +2,19 @@ LICENSE
 
 This license applies to all parts of Yaler. For a license to use Yaler under
 conditions other than those described below, or to purchase support, please
-contact Oberon microsystems at the following address:
+contact Yaler GmbH at the following address:
 
-Oberon microsystems AG
+Yaler GmbH
 Technoparkstrasse 1
 CH-8005 Zürich
 Switzerland
 
-Net: info@oberon.ch
+Net: info@yaler.net
 Tel: +41 (0) 44 445 17 51
 Fax: +41 (0) 44 445 17 52
 
 
-Copyright (c) 2010, Oberon microsystems AG, Switzerland
+Copyright (c) 2011, Yaler GmbH, Switzerland
 All rights reserved
 
 Redistribution and use in source and binary forms, with or without modification,

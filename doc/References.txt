@@ -1,0 +1,22 @@
+- Naohiro Hayashibara, Xavier Défago, Rami Yared, Takuya Katayama. The Phi
+  Accrual Failure Detector. 2004.
+
+- David Karger, Eric Lehman, Tom Leighton, Matthew Levine, Daniel Lewin,
+  Rina Panigrahy. Consistent Hashing and Random Trees: Distributed Caching 
+  Protocols for	Relieving Hot Spots on the World Wide Web. 1997.
+
+- Avinash Lakshman, Prashant Malik. Cassandra - A Decentralized Structured
+  Storage System. 2009.
+
+- Robbert van Renesse, Yaron Minsky, Mark Hayden. A gossip-style failure
+  detection service. 1996.
+
+- Robbert van Renesse, Dan Dumitriu, Valient Gough, Chris Thomas. Efficient
+  Reconciliation and Flow Control for Anti-Entropy Protocols. 2008.
+
+- Miro Samek. Practical UML Statecharts in C/C++, Second Edition. 2008.
+
+- Jeffrey Scott Vitter. Random Sampling with a Reservoir. 1985.
+
+- Niklaus Wirth. Sorting by Straight Insertion in Algorithms and Data Structure,
+  Oberon version. 2004.

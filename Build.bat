@@ -1,4 +1,6 @@
 @echo off
-javac src/org/yaler/*.java
-javac -cp src test/org/yaler/*.java
-cd src && (jar cf ../yaler.jar org/yaler/*.class & cd ..)
+javac -cp src src/org/yaler/core/*.java
+javac -cp src src/org/yaler/relay/*.java
+javac -cp src src/*.java
+javac -cp src test/*.java
+cd src && (jar cf ../yaler.jar *.class org/yaler/core/*.class org/yaler/relay/*.class & cd ..)

@@ -1,12 +1,10 @@
-// Copyright (c) 2010, Oberon microsystems AG, Switzerland
+// Copyright (c) 2011, Yaler GmbH, Switzerland
 // All rights reserved
 
 // This module is based on Miro Samek's QEP event processor published in the
 // book "Practical UML Statecharts in C/C++, Second Edition".
 
-package org.yaler;
-
-import org.yaler.Assertions;
+package org.yaler.core;
 
 public final class StateMachines {
 	private StateMachines () {}
@@ -31,8 +29,6 @@ public final class StateMachines {
 		private final State[] path = new State[8];
 		private State state, transitionTo, upwardTo;
 		private boolean barrier;
-
-		static { Assertions.enable(); }
 
 		public void transitionTo (State s) {
 			assert barrier;
@@ -211,10 +207,8 @@ public final class StateMachines {
 			} while ((upwardTo != null) && (upwardTo != State.TOP));
 			if (transitionTo != null) {
 				State target = transitionTo;
-				int j = 0;
-				while (j != i) {
+				for (int j = 0; j != i; j++) {
 					dispatchExit(path[j], path[j + 1]);
-					j++;
 				}
 				state = processTransition(path[i], target);
 			} else {

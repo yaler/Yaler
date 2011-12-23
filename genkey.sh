@@ -1,2 +1,3 @@
 #!/bin/sh
-keytool -genkey -keyalg rsa -keystore yalerkeys -alias yaler
+keytool -genkey -keyalg rsa -keystore yalerkeys -alias yalerkey -storepass yaler.org -keypass yaler.org -dname "cn="
+

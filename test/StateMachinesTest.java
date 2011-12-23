@@ -1,20 +1,15 @@
-// Copyright (c) 2010, Oberon microsystems AG, Switzerland
+// Copyright (c) 2011, Yaler GmbH, Switzerland
 // All rights reserved
 
 // This module is based on Miro Samek's QEP event processor published in the
 // book "Practical UML Statecharts in C/C++, Second Edition".
 
-package org.yaler;
-
-import org.yaler.Assertions;
-import org.yaler.StateMachines.State;
-import org.yaler.StateMachines.StateMachine;
+import org.yaler.core.StateMachines.State;
+import org.yaler.core.StateMachines.StateMachine;
 
 class StateMachinesTest {
 	private static final StringBuilder log = new StringBuilder();
 	private static boolean flag;
-
-	static { Assertions.enable(); }
 
 	private static final State s = new State() {
 		public void handle (StateMachine m, Object o) {
@@ -184,7 +179,7 @@ class StateMachinesTest {
 			log.append("\n" + c + ":");
 			m.dispatch(Character.toString(c).intern());
 		}
-		assert log.toString().equals(
+		if (log.toString().equals(
 			"top-INIT;s-ENTER;s2-ENTER;s2-INIT;s21-ENTER;s211-ENTER;"
 			+ "\n" + "A:s21-A;s211-EXIT;s21-EXIT;s21-ENTER;s21-INIT;s211-ENTER;"
 			+ "\n" + "B:s21-B;s211-EXIT;s211-ENTER;"
@@ -206,7 +201,11 @@ class StateMachinesTest {
 			+ "\n" + "C:s1-C;s11-EXIT;s1-EXIT;s2-ENTER;s2-INIT;s21-ENTER;s211-ENTER;"
 			+ "\n" + "G:s21-G;s211-EXIT;s21-EXIT;s2-EXIT;s1-ENTER;s1-INIT;s11-ENTER;"
 			+ "\n" + "C:s1-C;s11-EXIT;s1-EXIT;s2-ENTER;s2-INIT;s21-ENTER;s211-ENTER;"
-			+ "\n" + "C:s2-C;s211-EXIT;s21-EXIT;s2-EXIT;s1-ENTER;s1-INIT;s11-ENTER;");
-		System.out.println("done (" + (System.nanoTime() - t) / 1000000 + "ms)");
+			+ "\n" + "C:s2-C;s211-EXIT;s21-EXIT;s2-EXIT;s1-ENTER;s1-INIT;s11-ENTER;"))
+		{
+			System.out.println("done (" + (System.nanoTime() - t) / 1000000 + "ms)");
+		} else {
+			throw new AssertionError();
+		}
 	}
 }
