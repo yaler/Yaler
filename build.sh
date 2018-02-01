@@ -1,4 +1,5 @@
 #!/bin/sh
+
 javac -cp src src/org/yaler/core/*.java
 javac -cp src src/org/yaler/relay/*.java
 javac -cp src src/*.java

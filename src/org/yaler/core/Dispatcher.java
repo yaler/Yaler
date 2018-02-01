@@ -1,5 +1,4 @@
-// Copyright (c) 2011, Yaler GmbH, Switzerland
-// All rights reserved
+// Copyright (c) 2010 - 2018, Yaler Gmbh, Switzerland. All rights reserved.
 
 package org.yaler.core;
 

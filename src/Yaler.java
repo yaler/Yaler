@@ -1,5 +1,4 @@
-// Copyright (c) 2011, Yaler GmbH, Switzerland
-// All rights reserved
+// Copyright (c) 2010 - 2018, Yaler Gmbh, Switzerland. All rights reserved.
 
 import java.io.FileInputStream;
 import java.net.InetSocketAddress;
@@ -12,9 +11,8 @@ import javax.net.ssl.SSLContext;
 
 import org.yaler.core.Cluster;
 import org.yaler.core.Dispatcher;
-import org.yaler.relay.Policies;
-import org.yaler.relay.Relay;
 import org.yaler.core.Tasks;
+import org.yaler.relay.Relay;
 
 class Yaler {
 	private static final char[] PASSWORD = "yaler.org".toCharArray();
@@ -46,13 +44,12 @@ class Yaler {
 		} catch (Exception e) { throw new Error(e); }
 	}
 
-	private static InetSocketAddress endpoint (String s) {
-		InetSocketAddress a = null;
-		String[] t = s.split(":");
-		if (t.length == 2) {
-			try {
-				a = new InetSocketAddress(t[0], Integer.parseInt(t[1]));
-			} catch (IllegalArgumentException e) {}
+	private static InetSocketAddress endpoint (String host, String port) {
+		InetSocketAddress a;
+		try {
+			a = new InetSocketAddress(host, Integer.parseInt(port));
+		} catch (IllegalArgumentException e) {
+			a = null;
 		}
 		return a;
 	}
@@ -63,90 +60,133 @@ class Yaler {
 		if (!enabled) {
 			throw new AssertionError("assertions must be enabled");
 		} else {
+			final int NONE = 0, TLS = 1, DTLS = 2;
 			Tasks.setupExceptionHandling();
 			InetSocketAddress[] relayEndpoints = new InetSocketAddress[1024];
+			int[] relayEndpointSecurity = new int[1024];
 			InetSocketAddress clusterEndpoint = null;
 			InetSocketAddress[] seeds = null;
-			boolean secure = false, enablePolicies = false;
-			String hostname = null, root = null;
-			int capacity = Integer.MAX_VALUE, tokencount = 1;
-			int i = 0, j = args.length;
+			String[] hostnames = null;
+			String root = null;
+			int capacity = Integer.MAX_VALUE;
+			int tokencount = 1;
+			int i = 0;
+			int j = args.length;
 			boolean error = i == j;
 			if (!error) {
-				relayEndpoints[i] = endpoint(args[i]);
+				String s = args[i];
+				int k = s.lastIndexOf(':');
+				if (k >= 0) {
+					if ((k >= 4) && (s.startsWith("tls:") || s.startsWith("ssl:"))) {
+						relayEndpointSecurity[i] = TLS;
+						relayEndpoints[i] = endpoint(s.substring(4, k), s.substring(k + 1));
+					} else if ((k >= 5) && s.startsWith("dtls:")) {
+						relayEndpointSecurity[i] = DTLS;
+						relayEndpoints[i] = endpoint(s.substring(5, k), s.substring(k + 1));
+					} else {
+						relayEndpoints[i] = endpoint(s.substring(0, k), s.substring(k + 1));
+					}
+				}
 				error = relayEndpoints[i] == null;
 				i++;
 			}
-			while (!error && (i != j) && (args[i].charAt(0) != '-')) {
-				try {
-					relayEndpoints[i] = new InetSocketAddress(
-						relayEndpoints[0].getAddress().getHostAddress(),
-						Integer.parseInt(args[i]));
-				} catch (IllegalArgumentException e) { error = true; }
-				i++;
+			if (!error && (i != j) && (args[i].charAt(0) != '-')) {
+				String s = relayEndpoints[0].getAddress().getHostAddress();
+				do {
+					String t = args[i];
+					if (t.startsWith("tls:") || t.startsWith("ssl:")) {
+						relayEndpointSecurity[i] = TLS;
+						relayEndpoints[i] = endpoint(s, t.substring(4));
+					} else if (t.startsWith("dtls:")) {
+						relayEndpointSecurity[i] = DTLS;
+						relayEndpoints[i] = endpoint(s, t.substring(5));
+					} else {
+						relayEndpoints[i] = endpoint(s, t);
+					}
+					error = relayEndpoints[i] == null;
+					i++;
+				} while (!error && (i != j) && (args[i].charAt(0) != '-'));
 			}
-			if (!error && (i < j - 1) && args[i].equals("-hostname")) {
-				hostname = args[i + 1];
-				i += 2;
+			if (!error && (i < j - 1) && args[i].equals("-hostnames")) {
+				i++;
+				int k = i;
+				while ((k != j) && (args[k].charAt(0) != '-')) {
+					k++;
+				}
+				error = k == i;
+				if (!error) {
+					hostnames = new String[k - i];
+					System.arraycopy(args, i, hostnames, 0, k - i);
+					i = k;
+				}
 			}
 			if (!error && (i < j - 1) && args[i].equals("-capacity")) {
 				try {
 					capacity = Integer.parseInt(args[i + 1]);
-				} catch (IllegalArgumentException e) { error = true; }
+				} catch (IllegalArgumentException e) {
+					error = true;
+				}
 				i += 2;
-			}
-			if (!error && (i != j) && args[i].equals("-secure")) {
-				secure = true;
-				i++;
-			}
-			if (!error && (i != j) && args[i].equals("-enablepolicies")) {
-				enablePolicies = true;
-				i++;
 			}
 			if (!error && (i < j - 1) && args[i].equals("-root")) {
 				root = args[i + 1];
 				i += 2;
 			}
 			if (!error && (i < j - 1) && args[i].equals("-cluster")) {
-				clusterEndpoint = endpoint(args[i + 1]);
+				String s = args[i + 1];
+				int k = s.lastIndexOf(':');
+				if (k >= 0) {
+					clusterEndpoint = endpoint(s.substring(0, k), s.substring(k + 1));
+				}
 				error = clusterEndpoint == null;
 				i += 2;
 				if (!error && (i < j - 1) && args[j - 2].equals("-tokencount")) {
 					try {
 						tokencount = Integer.parseInt(args[j - 1]);
-					} catch (IllegalArgumentException e) { error = true; }
+					} catch (IllegalArgumentException e) {
+						error = true;
+					}
 					j -= 2;
 				}
 				seeds = new InetSocketAddress[j - i];
 				while (!error && (i != j)) {
 					j--;
-					seeds[j - i] = endpoint(args[j]);
+					s = args[j];
+					k = s.lastIndexOf(':');
+					if (k >= 0) {
+						seeds[j - i] = endpoint(s.substring(0, k), s.substring(k + 1));
+					}
 					error = seeds[j - i] == null;
 				}
 			}
 			if (error || (i != j)) {
-				System.err.print("Yaler 2.0\n"
-					+ "Usage: Yaler <host>:<port> [port ...] "
-					+ "[-hostname <hostname>] [-capacity <capacity>] "
-					+ "[-secure] [-enablepolicies] [-root <uri>] "
-					+ "[-cluster <host>:<port> ... [-tokencount <tokencount>]]\n");
+				System.err.println("Yaler v2.1.0\n"
+					+ "Usage: Yaler [ssl:]<host>:<port> [[ssl:]port ...] "
+					+ "[-hostnames <hostname> ...] [-capacity <capacity>] [-root <uri>] "
+					+ "[-cluster <host>:<port> ... [-tokencount <tokencount>]]");
 			} else {
-				if ((clusterEndpoint != null) && (hostname == null)) {
-					hostname = relayEndpoints[0].getAddress().getHostAddress();
+				if ((clusterEndpoint != null) && (hostnames == null)) {
+					hostnames = new String[] {
+						relayEndpoints[0].getAddress().getHostAddress()};
 				}
-				Relay.init(hostname, root, capacity, tokencount);
-				for (InetSocketAddress relayEndpoint: relayEndpoints) {
-					if (relayEndpoint != null) {
-						SSLContext sslContext = secure? sslContext(keystore()): null;
-						Relay.open(relayEndpoint, sslContext);
+				Relay.init(hostnames, root, capacity, tokencount);
+				i = 0; j = relayEndpoints.length;
+				while ((i != j) && (relayEndpoints[i] != null)) {
+					if (relayEndpointSecurity[i] == NONE) {
+						Relay.openConnectionListener(
+							relayEndpoints[i], null);
+					} else if (relayEndpointSecurity[i] == TLS) {
+						Relay.openConnectionListener(
+							relayEndpoints[i], sslContext(keystore()));
+					} else {
+						assert relayEndpointSecurity[i] == DTLS;
+						Relay.openDatagramListener(relayEndpoints[i]);
 					}
+					i++;
 				}
 				if (clusterEndpoint != null) {
 					Mac mac = mac(keystore());
-					Cluster.join(clusterEndpoint, hostname, tokencount, seeds, mac);
-				}
-				if (enablePolicies) {
-					Policies.enable(relayEndpoints[0].getAddress().getHostAddress());
+					Cluster.join(clusterEndpoint, hostnames[0], tokencount, seeds, mac);
 				}
 				Dispatcher.run();
 			}

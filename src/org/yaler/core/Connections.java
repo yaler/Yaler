@@ -1,5 +1,4 @@
-// Copyright (c) 2011, Yaler GmbH, Switzerland
-// All rights reserved
+// Copyright (c) 2010 - 2018, Yaler Gmbh, Switzerland. All rights reserved.
 
 package org.yaler.core;
 
@@ -11,6 +10,7 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult.HandshakeStatus;
 import javax.net.ssl.SSLEngineResult.Status;
 import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLParameters;
 
 import org.yaler.core.Dispatcher;
 import org.yaler.core.Dispatcher.Selection;
@@ -22,8 +22,39 @@ import org.yaler.core.Tasks.Executor;
 public final class Connections {
 	private Connections () {}
 
+	private static final String[]
+		DEFAULT_PROTOCOLS = new String[] {
+			"TLSv1.2",
+			"TLSv1.1",
+			"TLSv1"},
+		DEFAULT_CIPHER_SUITES = new String[] {
+			"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+			"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+			"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+			"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+			"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+			"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+			"TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+			"TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+			"TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+			"TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+			"TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
+			"TLS_DHE_RSA_WITH_AES_256_CBC_SHA256",
+			"SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA",
+			"SSL_RSA_WITH_3DES_EDE_CBC_SHA"};
+
+	static {
+		System.setProperty("jdk.tls.ephemeralDHKeySize", "2048");
+	}
+
 	public static interface CompletionHandler {
 		public void handle (Connection c, ByteBuffer b, boolean error);
+	}
+
+	private static final class Upgrade {
+		SSLEngine sslEngine;
+		ByteBuffer buffer;
+		CompletionHandler completionHandler;
 	}
 
 	private static final class Send {
@@ -36,12 +67,15 @@ public final class Connections {
 		CompletionHandler completionHandler;
 	}
 
+	private static final class Shutdown {
+		CompletionHandler completionHandler;
+	}
+
 	public static final class Connection {
 		private static final boolean
 			ERROR = true;
 		private static final Object
 			CLOSE = new Object(),
-			SHUTDOWN_OUTPUT = new Object(),
 			TASK_COMPLETION = new Object();
 		private static final ByteBuffer
 			NULL = ByteBuffer.allocate(0);
@@ -51,11 +85,44 @@ public final class Connections {
 
 		private final StateMachine stateMachine = new StateMachine();
 		private final SocketChannel channel;
-		private final SSLEngine sslEngine;
 
-		private CompletionHandler sendCompletionHandler, receiveCompletionHandler;
-		private ByteBuffer inboundBuffer, outboundBuffer, readBuffer, writeBuffer;
+		private volatile SSLEngine sslEngine;
+
+		private CompletionHandler
+			sendCompletionHandler,
+			receiveCompletionHandler,
+			shutdownCompletionHandler;
+		private ByteBuffer
+			inboundBuffer,
+			outboundBuffer,
+			readBuffer,
+			writeBuffer;
 		private int interestOps;
+		private HandshakeStatus handshakeStatus;
+		private int handshakeCount;
+
+		private static String[] intersection (String[] x, String[] y) {
+			String[] z = new String[Math.min(x.length, y.length)];
+			int k = 0, i = 0, n = x.length;
+			while (i != n) {
+				String t = x[i];
+				int j = 0, m = y.length;
+				while ((j != m) && !t.equals(y[j])) {
+					j++;
+				}
+				if (j != m) {
+					z[k] = t;
+					k++;
+				}
+				i++;
+			}
+			if (k != z.length) {
+				String[] t = new String[k];
+				System.arraycopy(z, 0, t, 0, k);
+				z = t;
+			}
+			return z;
+		}
 
 		public Connection (SocketChannel c, SSLEngine e) {
 			assert c != null;
@@ -65,12 +132,47 @@ public final class Connections {
 			inboundBuffer = NULL;
 			outboundBuffer = NULL;
 			if (sslEngine != null) {
-				int n = sslEngine.getSession().getPacketBufferSize();
-				readBuffer = ByteBuffer.allocateDirect(n);
-				writeBuffer = ByteBuffer.allocateDirect(n);
-				writeBuffer.flip();
+				initSSL(null);
 			}
 			Dispatcher.start(stateMachine, normal);
+		}
+
+		private void initSSL (ByteBuffer b) {
+			sslEngine.setEnabledProtocols(intersection(
+				DEFAULT_PROTOCOLS, sslEngine.getSupportedProtocols()));
+			sslEngine.setEnabledCipherSuites(intersection(
+				DEFAULT_CIPHER_SUITES, sslEngine.getSupportedCipherSuites()));
+			try {
+				SSLParameters sslParameters = sslEngine.getSSLParameters();
+				sslParameters.getClass()
+					.getMethod("setUseCipherSuitesOrder", Boolean.TYPE)
+					.invoke(sslParameters, Boolean.TRUE);
+				sslEngine.setSSLParameters(sslParameters);
+			} catch (NoSuchMethodException x) {
+			} catch (Exception x) {
+				throw new Error(x);
+			}
+			int n = sslEngine.getSession().getPacketBufferSize();
+			if (b == null) {
+				readBuffer = ByteBuffer.allocate(n);
+			} else {
+				b.flip();
+				if (n > b.remaining()) {
+					readBuffer = ByteBuffer.allocate(n).put(b);
+				} else {
+					readBuffer = ByteBuffer.allocate(b.remaining()).put(b);
+				}
+			}
+			writeBuffer = ByteBuffer.allocate(n);
+			writeBuffer.flip();
+			handshakeStatus = HandshakeStatus.NOT_HANDSHAKING;
+			handshakeCount = 0;
+		}
+
+		private void bounceUpgrade (Upgrade u) {
+			if (u.completionHandler != null) {
+				u.completionHandler.handle(this, u.buffer, ERROR);
+			}
 		}
 
 		private void bounceSend (Send s) {
@@ -79,6 +181,12 @@ public final class Connections {
 
 		private void bounceReceive (Receive r) {
 			r.completionHandler.handle(this, r.buffer, ERROR);
+		}
+
+		private void bounceShutdown (Shutdown s) {
+			if (s.completionHandler != null) {
+				s.completionHandler.handle(this, null, ERROR);
+			}
 		}
 
 		private void signalSendCompletion (boolean error) {
@@ -94,6 +202,13 @@ public final class Connections {
 				receiveCompletionHandler.handle(this, inboundBuffer, error);
 				inboundBuffer = NULL;
 				receiveCompletionHandler = null;
+			}
+		}
+
+		private void signalShutdownCompletion (boolean error) {
+			if (shutdownCompletionHandler != null) {
+				shutdownCompletionHandler.handle(this, null, error);
+				shutdownCompletionHandler = null;
 			}
 		}
 
@@ -126,7 +241,7 @@ public final class Connections {
 				if (s == Status.BUFFER_UNDERFLOW) {
 					int n = sslEngine.getSession().getPacketBufferSize();
 					if (n > readBuffer.capacity()) {
-						readBuffer = ByteBuffer.allocateDirect(n).put(readBuffer);
+						readBuffer = ByteBuffer.allocate(n).put(readBuffer);
 						readBuffer.flip();
 					}
 				}
@@ -148,7 +263,7 @@ public final class Connections {
 					int n = sslEngine.getSession().getPacketBufferSize();
 					if (n > writeBuffer.capacity()) {
 						writeBuffer.flip();
-						writeBuffer = ByteBuffer.allocateDirect(n).put(writeBuffer);
+						writeBuffer = ByteBuffer.allocate(n).put(writeBuffer);
 						s = sslEngine.wrap(outboundBuffer, writeBuffer).getStatus();
 					}
 				}
@@ -192,6 +307,7 @@ public final class Connections {
 				if (next == null) {
 					signalSendCompletion(ERROR);
 					signalReceiveCompletion(ERROR);
+					signalShutdownCompletion(ERROR);
 					next = closed;
 					stateMachine.transitionTo(next);
 				}
@@ -204,6 +320,7 @@ public final class Connections {
 					sslEngine.closeOutbound();
 					Status s = wrap();
 					if (s == null) {
+						signalShutdownCompletion(ERROR);
 						next = closed;
 					} else {
 						register(SelectionKey.OP_WRITE);
@@ -222,7 +339,20 @@ public final class Connections {
 				do {
 					s = null;
 					HandshakeStatus hs = sslEngine.getHandshakeStatus();
-					if (hs == HandshakeStatus.NEED_TASK) {
+					if (((hs == HandshakeStatus.NEED_UNWRAP)
+						|| (hs == HandshakeStatus.NEED_WRAP)
+						|| (hs == HandshakeStatus.NEED_TASK))
+						&& (handshakeStatus != HandshakeStatus.NEED_UNWRAP)
+						&& (handshakeStatus != HandshakeStatus.NEED_WRAP)
+						&& (handshakeStatus != HandshakeStatus.NEED_TASK)
+						&& (handshakeCount != Integer.MAX_VALUE))
+					{
+						handshakeCount++;
+					}
+					handshakeStatus = hs;
+					if (handshakeCount > 1) {
+						transitionToClosed();
+					} else if (hs == HandshakeStatus.NEED_TASK) {
 						submitTask();
 					} else {
 						if ((hs == HandshakeStatus.NEED_UNWRAP)
@@ -258,6 +388,23 @@ public final class Connections {
 				}
 			}
 
+			void upgrade (SSLEngine e, ByteBuffer b, CompletionHandler h) {
+				assert sslEngine == null;
+				sslEngine = e;
+				inboundBuffer = NULL;
+				outboundBuffer = NULL;
+				initSSL(b);
+				boolean error = false;
+				try {
+					sslEngine.beginHandshake();
+				} catch (SSLException x) {
+					error = true;
+				}
+				if (h != null) {
+					h.handle(Connection.this, null, error);
+				}
+			}
+
 			void send (ByteBuffer b, CompletionHandler h) {
 				assert sendCompletionHandler == null;
 				sendCompletionHandler = h;
@@ -289,7 +436,7 @@ public final class Connections {
 								n += channel.socket().getReceiveBufferSize();
 							} catch (IOException e) { throw new Error(e); }
 							inboundBuffer.flip();
-							inboundBuffer = ByteBuffer.allocateDirect(n).put(inboundBuffer);
+							inboundBuffer = ByteBuffer.allocate(n).put(inboundBuffer);
 						}
 						readBuffer = inboundBuffer;
 						register(SelectionKey.OP_READ);
@@ -303,17 +450,28 @@ public final class Connections {
 							inboundBuffer = b.put(inboundBuffer);
 						} else {
 							b.flip();
-							ByteBuffer x;
 							int n = b.limit() + inboundBuffer.limit();
-							if (b.isDirect()) {
-								x = ByteBuffer.allocateDirect(n);
-							} else {
-								x = ByteBuffer.allocate(n);
-							}
-							inboundBuffer = x.put(b).put(inboundBuffer);
+							inboundBuffer = ByteBuffer.allocate(n).put(b).put(inboundBuffer);
 						}
 					}
 					signalReceiveCompletion(!ERROR);
+				}
+			}
+
+			void shutdownOutput (CompletionHandler h) {
+				assert shutdownCompletionHandler == null;
+				shutdownCompletionHandler = h;
+				if (sslEngine == null) {
+					signalSendCompletion(ERROR);
+					boolean error = false;
+					try {
+						channel.socket().shutdownOutput();
+					} catch (IOException e) {
+						error = true;
+					}
+					signalShutdownCompletion(error);
+				} else {
+					transitionToClosure();
 				}
 			}
 
@@ -361,46 +519,31 @@ public final class Connections {
 				}
 			}
 
-			void shutdownOutput () {
-				if (sslEngine == null) {
-					signalSendCompletion(ERROR);
-					try {
-						channel.socket().shutdownOutput();
-					} catch (IOException e) {}
-				} else {
-					transitionToClosure();
-				}
-			}
-
-			void close () {
-				if (sslEngine == null) {
-					transitionToClosed();
-				} else {
-					transitionToClosure();
-				}
-			}
-
 			public void handle (StateMachine m, Object o) {
-				if (o instanceof Send) {
+				if (o instanceof Upgrade) {
+					Upgrade u = (Upgrade) o;
+					upgrade(u.sslEngine, u.buffer, u.completionHandler);
+				} else if (o instanceof Send) {
 					Send s = (Send) o;
 					send(s.buffer, s.completionHandler);
 				} else if (o instanceof Receive) {
 					Receive r = (Receive) o;
 					receive(r.buffer, r.completionHandler);
+				} else if (o instanceof Shutdown) {
+					Shutdown s = (Shutdown) o;
+					shutdownOutput(s.completionHandler);
 				} else if (o instanceof Selection) {
 					int readyOps = ((Selection) o).readyOps;
-					if ((readyOps & SelectionKey.OP_READ) != 0) {
+					if ((readyOps & SelectionKey.OP_READ) == SelectionKey.OP_READ) {
 						read();
 					}
-					if ((readyOps & SelectionKey.OP_WRITE) != 0) {
+					if ((readyOps & SelectionKey.OP_WRITE) == SelectionKey.OP_WRITE) {
 						write();
 					}
 				} else if (o == TASK_COMPLETION) {
 					handleSSLStatus();
-				} else if (o == SHUTDOWN_OUTPUT) {
-					shutdownOutput();
 				} else if (o == CLOSE) {
-					close();
+					transitionToClosed();
 				} else {
 					m.upwardTo(open);
 				}
@@ -409,28 +552,39 @@ public final class Connections {
 
 		private final State closure = new State() {
 			public void handle (StateMachine m, Object o) {
-				if (o instanceof Send) {
+				if (o instanceof Upgrade) {
+					bounceUpgrade((Upgrade) o);
+				} else if (o instanceof Send) {
 					bounceSend((Send) o);
 				} else if (o instanceof Receive) {
 					bounceReceive((Receive) o);
+				} else if (o instanceof Shutdown) {
+					bounceShutdown((Shutdown) o);
 				} else if (o instanceof Selection) {
-					if ((((Selection) o).readyOps & SelectionKey.OP_WRITE) != 0) {
+					int readyOps = ((Selection) o).readyOps;
+					if ((readyOps & SelectionKey.OP_WRITE) == SelectionKey.OP_WRITE) {
 						int n = -1;
 						try {
 							n = channel.write(writeBuffer);
 						} catch (IOException e) {}
 						if (!writeBuffer.hasRemaining()) {
 							Status s = wrap();
-							if ((s == null) || (s == Status.CLOSED)) {
+							if (s == null) {
+								signalShutdownCompletion(ERROR);
+								m.transitionTo(closed);
+							} else if (s == Status.CLOSED) {
+								signalShutdownCompletion(!ERROR);
 								m.transitionTo(closed);
 							}
 						} else if (n == -1) {
+							signalShutdownCompletion(ERROR);
 							m.transitionTo(closed);
 						}
 					}
-				} else if
-					((o != TASK_COMPLETION) && (o != SHUTDOWN_OUTPUT) && (o != CLOSE))
-				{
+				} else if (o == CLOSE) {
+					signalShutdownCompletion(ERROR);
+					m.transitionTo(closed);
+				} else if (o != TASK_COMPLETION) {
 					m.upwardTo(open);
 				}
 			}
@@ -438,16 +592,29 @@ public final class Connections {
 
 		private final State closed = new State() {
 			public void handle (StateMachine m, Object o) {
-				if (o instanceof Send) {
+				if (o instanceof Upgrade) {
+					bounceUpgrade((Upgrade) o);
+				} else if (o instanceof Send) {
 					bounceSend((Send) o);
 				} else if (o instanceof Receive) {
 					bounceReceive((Receive) o);
+				} else if (o instanceof Shutdown) {
+					bounceShutdown((Shutdown) o);
 				}
 			}
 		};
 
 		public boolean isSecure () {
 			return sslEngine != null;
+		}
+
+		public void upgradeToSSL (SSLEngine e, ByteBuffer b, CompletionHandler h) {
+			assert e != null;
+			Upgrade u = new Upgrade();
+			u.sslEngine = e;
+			u.buffer = b;
+			u.completionHandler = h;
+			Dispatcher.dispatch(stateMachine, u);
 		}
 
 		public void send (ByteBuffer b, CompletionHandler h) {
@@ -467,8 +634,10 @@ public final class Connections {
 			Dispatcher.dispatch(stateMachine, r);
 		}
 
-		public void shutdownOutput () {
-			Dispatcher.dispatch(stateMachine, SHUTDOWN_OUTPUT);
+		public void shutdownOutput (CompletionHandler h) {
+			Shutdown s = new Shutdown();
+			s.completionHandler = h;
+			Dispatcher.dispatch(stateMachine, s);
 		}
 
 		public void close () {

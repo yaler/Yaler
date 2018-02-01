@@ -1,5 +1,4 @@
-// Copyright (c) 2011, Yaler GmbH, Switzerland
-// All rights reserved
+// Copyright (c) 2010 - 2018, Yaler Gmbh, Switzerland. All rights reserved.
 
 // This module is based on Miro Samek's QEP event processor published in the
 // book "Practical UML Statecharts in C/C++, Second Edition".

@@ -1,5 +1,4 @@
-// Copyright (c) 2011, Yaler GmbH, Switzerland
-// All rights reserved
+// Copyright (c) 2010 - 2018, Yaler Gmbh, Switzerland. All rights reserved.
 
 // Cluster membership is managed based on Scuttlebutt, an efficient anti-entropy
 // protocol by van Renesse et al., 2004. Failure detection is based on ideas
@@ -255,7 +254,7 @@ public final class Cluster {
 	}
 
 	private static void gossip (Digest d) {
-		ByteBuffer b = ByteBuffer.allocateDirect(DATAGRAM_LENGTH);
+		ByteBuffer b = ByteBuffer.allocate(DATAGRAM_LENGTH);
 		b.put(DIGEST);
 		b.put((byte) d.size);
 		for (int i = 0; i != d.size; i++) {
@@ -342,10 +341,10 @@ public final class Cluster {
 	}
 
 	private static void handleDigest (ByteBuffer b, InetSocketAddress source) {
-		ByteBuffer values = ByteBuffer.allocateDirect(DATAGRAM_LENGTH);
+		ByteBuffer values = ByteBuffer.allocate(DATAGRAM_LENGTH);
 		values.put(DELTA_VALUES);
 		values.put((byte) 0);
-		ByteBuffer digest = ByteBuffer.allocateDirect(DATAGRAM_LENGTH);
+		ByteBuffer digest = ByteBuffer.allocate(DATAGRAM_LENGTH);
 		digest.put(DELTA_DIGEST);
 		digest.put((byte) 0);
 		Node n = nodes;
@@ -360,7 +359,7 @@ public final class Cluster {
 				if (clock == 0) {
 					if (values.remaining() < length(n) + MAC_LENGTH) {
 						dispatch(source, values);
-						values = ByteBuffer.allocateDirect(DATAGRAM_LENGTH);
+						values = ByteBuffer.allocate(DATAGRAM_LENGTH);
 						values.put(DELTA_VALUES);
 						values.put((byte) 0);
 					}
@@ -483,7 +482,7 @@ public final class Cluster {
 							int readyOps = k.readyOps();
 							if ((readyOps & SelectionKey.OP_READ) != 0) {
 								Object source = null;
-								ByteBuffer b = ByteBuffer.allocateDirect(DATAGRAM_LENGTH);
+								ByteBuffer b = ByteBuffer.allocate(DATAGRAM_LENGTH);
 								try {
 									source = c.receive(b);
 								} catch (IOException e) {}
